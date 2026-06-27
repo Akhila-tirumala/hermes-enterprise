@@ -170,3 +170,13 @@ services:
       - "127.0.0.1:4317:4317"
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
+
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: hermes_portainer
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/portainer:/data
