@@ -1,0 +1,172 @@
+secrets:
+  jwt_secret:
+    file: ./secrets/jwt_secret.txt
+  db_password:
+    file: ./secrets/db_password.txt
+  gemini_api_key:
+    file: ./secrets/gemini_api_key.txt
+  langfuse_nextauth_secret:
+    file: ./secrets/langfuse_nextauth_secret.txt
+  langfuse_salt:
+    file: ./secrets/langfuse_salt.txt
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: hermes_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: hermes_auth
+      POSTGRES_USER: hermes
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets:
+      - db_password
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hermes -d hermes_auth"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: hermes_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  langfuse-db:
+    image: postgres:16-alpine
+    container_name: hermes_langfuse_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: langfuse
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse_password_change_me
+    volumes:
+      - ./data/langfuse-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  langfuse:
+    image: langfuse/langfuse:2
+    container_name: hermes_langfuse
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    secrets:
+      - langfuse_nextauth_secret
+      - langfuse_salt
+    environment:
+      DATABASE_URL: postgresql://langfuse:langfuse_password_change_me@langfuse-db:5432/langfuse
+      NEXTAUTH_SECRET_FILE: /run/secrets/langfuse_nextauth_secret
+      SALT_FILE: /run/secrets/langfuse_salt
+      NEXTAUTH_URL: http://localhost:3000
+      TELEMETRY_ENABLED: "false"
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+
+  auth-api:
+    build: ./auth-api
+    container_name: hermes_auth_api
+    restart: unless-stopped
+    secrets:
+      - jwt_secret
+      - db_password
+      - gemini_api_key
+    env_file:
+      - ./auth-api/.env
+    environment:
+      DATABASE_URL: postgresql://hermes:hermes_db_password_change_me@postgres:5432/hermes_auth
+      HERMES_BASE_URL: http://hermes-agent:8000
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET_FILE: /run/secrets/jwt_secret
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /usr/bin/docker:/usr/bin/docker
+      - /home/user11/hermes_enterprise/data/tenants:/workspace/tenants
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: ./auth-api
+    container_name: hermes_worker
+    restart: unless-stopped
+    command: python worker.py
+    secrets:
+      - db_password
+      - gemini_api_key
+    env_file:
+      - ./auth-api/.env
+    environment:
+      DATABASE_URL: postgresql://hermes:hermes_db_password_change_me@postgres:5432/hermes_auth
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /usr/bin/docker:/usr/bin/docker
+      - /home/user11/hermes_enterprise/data/tenants:/workspace/tenants
+      - /home/user11/hermes_enterprise/data/logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  hermes-agent:
+    build: ./app
+    container_name: hermes_enterprise_agent
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    env_file:
+      - ./app/.env
+    ports:
+      - "127.0.0.1:8001:8000"
+    volumes:
+      - ./app/config.yaml:/workspace/config.yaml
+      - ./app/state.db:/workspace/state.db
+      - ./app/kanban.db:/workspace/kanban.db
+      - ./app/memories:/workspace/memories
+      - ./app/skills:/workspace/skills
+      - ./app/logs:/workspace/logs
+    depends_on:
+      - postgres
+
+  nginx:
+    image: nginx:alpine
+    container_name: hermes_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - auth-api
+      - hermes-agent
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.56
+    container_name: hermes_jaeger
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:16686:16686"
+      - "127.0.0.1:4317:4317"
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"

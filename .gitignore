@@ -1,0 +1,17 @@
+*
+!.gitignore
+!.github/
+!.github/**
+!auth-api/
+!auth-api/**
+!nginx/
+!nginx/**
+!docker-compose.yml
+!backup.sh
+!restore.sh
+auth-api/.env
+secrets/
+data/
+*.db
+*.log
+*.sql
